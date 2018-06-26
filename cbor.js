@@ -115,9 +115,10 @@ class IPLD {
     return cid.toBaseEncodedString()
   }
   async cids (buffer) {
+    let self = this
     return (function * () {
-      yield this._cid(buffer)
-      let root = this._deserialize(buffer)
+      yield self._cid(buffer)
+      let root = self._deserialize(buffer)
       if (root['._'] === 'dag-split') {
         let cids = root.chunks.map(b => b['/'])
         for (let cid of cids) {
@@ -144,7 +145,8 @@ class IPLD {
         if (c.codec !== 'dag-cbor') {
           return {value: c, remaining: path.join('/')}
         }
-        return this.resolve(await this._get(root['/']), path)
+        let buff = await this._get(c.toBaseEncodedString())
+        return this.resolve(buff, path)
       }
     }
     return {value: root, remaining: path.join('/')}
@@ -162,16 +164,18 @@ class IPLD {
     if (buffer.length > this._maxSize) {
       throw new Error('cbor node is too large.')
     }
-    if (buffer.length > this._maxBlockSize) {
+    let maxBlockSize = this._maxBlockSize
+    let _serialize = this._serialize
+    if (buffer.length > maxBlockSize) {
       return (function * () {
         let node = {'._': 'dag-split'}
         node.chunks = []
-        for (let _chunk of chunk(buffer, this._maxBlockSize)) {
+        for (let _chunk of chunk(buffer, maxBlockSize)) {
           let block = asBlock(_chunk, 'raw')
           yield block
           node.chunks.push({'/': block.cid.toBaseEncodedString()})
         }
-        yield asBlock(this._serialize(node), 'dag-cbor')
+        yield asBlock(_serialize(node), 'dag-cbor')
       })()
     } else {
       return [asBlock(buffer, 'dag-cbor')]
@@ -181,8 +185,10 @@ class IPLD {
   async deserialize (buffer) {
     let root = this._deserialize(buffer)
     if (root['._'] === 'dag-split') {
-      let cids = root.chunks.map(b => b['/'])
-      let blocks = [cids.map(c => this._get(c))]
+      let cids = root.chunks.map(b => {
+        return (new CID(b['/'])).toBaseEncodedString()
+      })
+      let blocks = cids.map(c => this._get(c))
       let buffer = Buffer.concat(await Promise.all(blocks))
       return this._deserialize(buffer)
     } else {
@@ -191,23 +197,10 @@ class IPLD {
     // return native type
   }
   async tree (buffer) {
-    let root = this._deserialize(buffer)
-    if (root['._'] === 'dag-split') {
-      let cids = root.chunks.map(b => b['/'])
-      return (async function * () {
-        for (let cid of cids) {
-          let block = await this._get(cid)
-          let obj = this._deserialize(block)
-          for (let key of Object.keys(obj)) {
-            yield key
-          }
-        }
-      })()
-    } else {
-      return Object.keys(root)
-    }
+    // TODO: replaces streaming parsing for cbor using iterator.
+    return Object.keys(await this.deserialize(buffer))
     // returns iterable of keys
   }
 }
 
-module.exports = (get) => new IPLD()
+module.exports = (get) => new IPLD(get)
